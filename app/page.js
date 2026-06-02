@@ -47,7 +47,7 @@ export default function Page(){
   return (
     <div className="app">
       <header className="top">
-        <div className="logo">🐾</div>
+        <div className="logo"><CatMark/></div>
         <div className="brand">PurrfectCare<small>cat care assistant · guidance, not diagnosis</small></div>
         <div className="spacer" />
         <div className="catpill" onClick={()=>setTab("profile")} title="Switch / edit cat">
@@ -79,6 +79,37 @@ export default function Page(){
 
       {toast && <div className="toast">{toast}</div>}
     </div>
+  );
+}
+
+/* ---------- brand mascot ---------- */
+function CatMark(){
+  return (
+    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      {/* whiskers (behind head) */}
+      <g stroke="#2a2521" strokeWidth="0.9" strokeLinecap="round">
+        <line x1="9.5" y1="18.6" x2="3.4" y2="17.6"/>
+        <line x1="9.5" y1="20.4" x2="3.7" y2="21.6"/>
+        <line x1="22.5" y1="18.6" x2="28.6" y2="17.6"/>
+        <line x1="22.5" y1="20.4" x2="28.3" y2="21.6"/>
+      </g>
+      {/* ears */}
+      <path d="M8 5.5 L6.7 15 L14 10.8 Z" fill="#2a2521"/>
+      <path d="M24 5.5 L25.3 15 L18 10.8 Z" fill="#2a2521"/>
+      {/* head */}
+      <ellipse cx="16" cy="18" rx="9.6" ry="8.6" fill="#2a2521"/>
+      {/* inner ears */}
+      <path d="M9.2 8 L8.4 13 L12.6 10.6 Z" fill="#f5906f"/>
+      <path d="M22.8 8 L23.6 13 L19.4 10.6 Z" fill="#f5906f"/>
+      {/* eyes */}
+      <ellipse cx="12.4" cy="17.2" rx="1.55" ry="2.15" fill="#7ee0c8"/>
+      <ellipse cx="19.6" cy="17.2" rx="1.55" ry="2.15" fill="#7ee0c8"/>
+      {/* nose */}
+      <path d="M14.8 20 L17.2 20 L16 21.7 Z" fill="#f5906f"/>
+      {/* mouth */}
+      <path d="M16 21.6 C16 23 14.9 23.4 14 23.1 M16 21.6 C16 23 17.1 23.4 18 23.1"
+        stroke="#f5906f" strokeWidth="0.8" strokeLinecap="round" fill="none"/>
+    </svg>
   );
 }
 
@@ -125,8 +156,8 @@ function Sparkline({ vals }){
   const pts = v.map((val,i)=>xy(val,i).map(n=>n.toFixed(1)).join(",")).join(" ");
   return (
     <svg className="spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
-      <polyline fill="none" stroke="#7c9cff" strokeWidth="2" points={pts}/>
-      {v.map((val,i)=>{ const [x,y]=xy(val,i); return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="2" fill="#a78bfa"/>; })}
+      <polyline fill="none" stroke="#3fae9b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" points={pts}/>
+      {v.map((val,i)=>{ const [x,y]=xy(val,i); return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="2.5" fill="#f07a5a"/>; })}
     </svg>
   );
 }
