@@ -1,0 +1,549 @@
+"use client";
+/* ============================================================================
+   PurrfectCare — main client app (Output Layer)
+   Tabs: Today (daily log) · Dashboard · Assistant · Knowledge · Profile · Settings
+   Shares the exact same lib/ core (nlp, knowledge, reasoning, nudges) the
+   server uses, so the dashboard reacts instantly while chat answers come from
+   the server route /api/chat (which holds the API key).
+   ============================================================================ */
+import { useEffect, useRef, useState } from "react";
+import { loadDb, saveDb, blankDb, uid, todayStr, activeCat, logsFor, chatFor } from "../lib/store.js";
+import { matchTags, isRedFlag, label as tagLabel } from "../lib/nlp.js";
+import { DOCS, retrieve } from "../lib/knowledge.js";
+import { evaluate, weightTrend, ageInYears } from "../lib/reasoning.js";
+import { compute as computeNudges } from "../lib/nudges.js";
+
+const TABS = [
+  ["today","📋 Today"],["dashboard","📊 Dashboard"],["chat","💬 Assistant"],
+  ["knowledge","📚 Knowledge"],["profile","🐱 Profile"],["settings","⚙️ Settings"],
+];
+
+export default function Page(){
+  const [db, setDb] = useState(null);
+  const [tab, setTab] = useState("today");
+  const [toast, setToast] = useState("");
+
+  useEffect(()=>{
+    const loaded = loadDb();
+    setDb(loaded);
+    if(!activeCat(loaded)) setTab("profile");
+  },[]);
+
+  function update(mutator){
+    setDb(prev=>{
+      const next = structuredClone(prev);
+      mutator(next);
+      saveDb(next);
+      return next;
+    });
+  }
+  function flash(msg){ setToast(msg); setTimeout(()=>setToast(""),1800); }
+
+  if(!db) return <div className="app"><div className="panel">Loading…</div></div>;
+
+  const cat = activeCat(db);
+  const needCat = !cat && tab !== "profile" && tab !== "settings";
+
+  return (
+    <div className="app">
+      <header className="top">
+        <div className="logo">🐾</div>
+        <div className="brand">PurrfectCare<small>cat care assistant · guidance, not diagnosis</small></div>
+        <div className="spacer" />
+        <div className="catpill" onClick={()=>setTab("profile")} title="Switch / edit cat">
+          <span className="dot" /> {cat ? cat.name : "No cat yet"} <span className="muted">▾</span>
+        </div>
+      </header>
+
+      <nav className="tabs">
+        {TABS.map(([id,labelTxt])=>(
+          <button key={id} className={tab===id?"active":""} onClick={()=>setTab(id)}>{labelTxt}</button>
+        ))}
+      </nav>
+
+      <main>
+        {needCat ? <Welcome onAdd={()=>setTab("profile")} />
+          : tab==="today" ? <TodayTab db={db} cat={cat} update={update} flash={flash} />
+          : tab==="dashboard" ? <DashboardTab db={db} cat={cat} />
+          : tab==="chat" ? <ChatTab db={db} cat={cat} update={update} />
+          : tab==="knowledge" ? <KnowledgeTab />
+          : tab==="profile" ? <ProfileTab db={db} cat={cat} update={update} flash={flash} setTab={setTab} />
+          : <SettingsTab db={db} update={update} flash={flash} setTab={setTab} />}
+      </main>
+
+      <p className="disc">
+        PurrfectCare offers general, educational guidance drawn from veterinary sources (AVMA, Cornell Feline
+        Health Center, ASPCA) and community discussion. It is <b>not a veterinarian</b> and does not diagnose.
+        For any urgent or worsening sign, contact a veterinarian or an emergency clinic.
+      </p>
+
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}
+
+/* ---------- small shared UI ---------- */
+function Welcome({ onAdd }){
+  return (
+    <div className="panel">
+      <h2>Welcome to PurrfectCare 🐾</h2>
+      <p className="muted">Start by adding your cat. Then log a quick daily check-in, and the assistant builds
+        health trends, food &amp; care guidance, and proactive nudges over time.</p>
+      <button className="btn" onClick={onAdd}>➕ Add my cat</button>
+    </div>
+  );
+}
+
+function Seg({ value, options, onChange }){
+  return (
+    <div className="seg">
+      {options.map(o=>(
+        <button key={o.v} className={value===o.v?"on":""} onClick={()=>onChange(o.v)} type="button">{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+function Alert({ rec }){
+  const ic = rec.severity==="escalate" ? "🚑" : rec.severity==="monitor" ? "👀" : "💡";
+  return (
+    <div className={"alert "+rec.severity}>
+      <span className="ic">{ic}</span>
+      <div>
+        <b>{rec.title}</b><br/>{rec.body}
+        {rec.sources?.length ? <span className="src">Source: {rec.sources.join(", ")}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function Sparkline({ vals }){
+  const v = vals.filter(x=>x!=null && !isNaN(x));
+  if(!v.length) return null;
+  const w=240,h=38,pad=3, mn=Math.min(...v), mx=Math.max(...v), rng=(mx-mn)||1;
+  const xy = (val,i)=>[pad+(i*(w-2*pad)/Math.max(1,v.length-1)), h-pad-((val-mn)/rng)*(h-2*pad)];
+  const pts = v.map((val,i)=>xy(val,i).map(n=>n.toFixed(1)).join(",")).join(" ");
+  return (
+    <svg className="spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+      <polyline fill="none" stroke="#7c9cff" strokeWidth="2" points={pts}/>
+      {v.map((val,i)=>{ const [x,y]=xy(val,i); return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="2" fill="#a78bfa"/>; })}
+    </svg>
+  );
+}
+
+/* ---------- metric helpers (client) ---------- */
+function deriveLogTags(l){
+  const t=[];
+  if(l.appetite==="low"||l.appetite==="none") t.push("appetite_decline");
+  if(l.appetite==="high") t.push("appetite_increase");
+  if(l.energy==="low") t.push("lethargy");
+  if(l.water==="high") t.push("excessive_thirst");
+  if(l.litter==="diarrhea") t.push("diarrhea");
+  if(l.litter==="constipated") t.push("constipation");
+  if(l.grooming==="over") t.push("overgrooming");
+  if(l.grooming==="under") t.push("grooming_decline");
+  (l.tags||[]).forEach(x=>t.push(x));
+  return t;
+}
+function aggregateTags(recent){
+  const s=new Set();
+  recent.forEach(l=>deriveLogTags(l).forEach(t=>s.add(t)));
+  return [...s];
+}
+const scoreAppetite = a => ({none:0,low:1,normal:2,high:3}[a] ?? null);
+const scoreEnergy = e => ({low:0,normal:1,playful:2}[e] ?? null);
+function lifeStage(cat){ const y=ageInYears(cat); return y<1?"kitten":y>=11?"senior":"adult"; }
+function idealCalories(cat){
+  if(!cat?.weight) return null;
+  let lb = parseFloat(cat.weight); if(isNaN(lb)) return null;
+  if(cat.weightUnit==="kg") lb*=2.20462;
+  const kcal = Math.round(lb*20);
+  const ideal = cat.weightUnit==="kg" ? (lb/2.20462).toFixed(1) : lb.toFixed(1);
+  return { kcal, ideal };
+}
+
+/* ---------- TODAY ---------- */
+function TodayTab({ db, cat, update, flash }){
+  const logs = logsFor(db, cat.id);
+  const existing = logs.find(l=>l.date===todayStr());
+  const [draft, setDraft] = useState(()=> existing ? {...existing} : {
+    appetite:"normal", energy:"normal", litter:"normal", water:"normal", grooming:"normal", weight:"", notes:""
+  });
+  useEffect(()=>{
+    const ex = logsFor(db, cat.id).find(l=>l.date===todayStr());
+    setDraft(ex ? {...ex} : { appetite:"normal", energy:"normal", litter:"normal", water:"normal", grooming:"normal", weight:"", notes:"" });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[cat.id]);
+
+  const set = (k,v)=>setDraft(d=>({...d,[k]:v}));
+  const liveTags = matchTags(draft.notes||"");
+
+  function save(){
+    const log = {
+      date: todayStr(),
+      appetite: draft.appetite||"normal", energy: draft.energy||"normal",
+      litter: draft.litter||"normal", water: draft.water||"normal", grooming: draft.grooming||"normal",
+      weight: draft.weight||"", notes: draft.notes||"",
+      tags: matchTags(draft.notes||"").map(t=>t.tag),
+    };
+    update(next=>{
+      const arr = (next.logs[cat.id] = next.logs[cat.id] || []);
+      const i = arr.findIndex(l=>l.date===log.date);
+      if(i>=0) arr[i]=log; else arr.push(log);
+      arr.sort((a,b)=>a.date.localeCompare(b.date));
+      if(log.weight){ const c=next.cats.find(c=>c.id===cat.id); if(c) c.weight=log.weight; }
+    });
+    flash("Check-in saved");
+  }
+
+  // insights from this day's draft + recent history
+  const recent = logs.slice(-7);
+  const tags = matchTags(draft.notes||"").concat(deriveLogTags(draft).map(t=>({tag:t})));
+  const evald = evaluate({ cat, recentLogs: recent, tags });
+
+  return (
+    <>
+      <div className="panel">
+        <h2>Today's check-in <span className="sub">· {todayStr()} · {cat.name}</span></h2>
+        <p className="muted small">A 30-second log. The more days you record, the smarter the trends and nudges get.</p>
+        <div className="grid g2">
+          <div>
+            <label className="f">Appetite</label>
+            <Seg value={draft.appetite} onChange={v=>set("appetite",v)} options={[
+              {v:"normal",label:"Normal"},{v:"high",label:"High"},{v:"low",label:"Low"},{v:"none",label:"Not eating"}]}/>
+            <label className="f">Energy</label>
+            <Seg value={draft.energy} onChange={v=>set("energy",v)} options={[
+              {v:"playful",label:"Playful"},{v:"normal",label:"Normal"},{v:"low",label:"Lethargic"}]}/>
+            <label className="f">Litter box</label>
+            <Seg value={draft.litter} onChange={v=>set("litter",v)} options={[
+              {v:"normal",label:"Normal"},{v:"diarrhea",label:"Loose"},{v:"constipated",label:"Straining"},{v:"none",label:"None seen"}]}/>
+          </div>
+          <div>
+            <label className="f">Water intake</label>
+            <Seg value={draft.water} onChange={v=>set("water",v)} options={[
+              {v:"normal",label:"Normal"},{v:"high",label:"Drinking a lot"},{v:"low",label:"Little"}]}/>
+            <label className="f">Grooming</label>
+            <Seg value={draft.grooming} onChange={v=>set("grooming",v)} options={[
+              {v:"normal",label:"Normal"},{v:"over",label:"Overgrooming"},{v:"under",label:"Not grooming"}]}/>
+            <label className="f">Weight today (optional, {cat.weightUnit})</label>
+            <input type="number" step="0.1" placeholder={`e.g. ${cat.weight||"10"}`} value={draft.weight}
+              onChange={e=>set("weight",e.target.value)} />
+          </div>
+        </div>
+        <label className="f">Anything else? (free text — I'll read it for signals)</label>
+        <textarea placeholder="e.g. 'She didn't eat much today and seems a bit hidey'"
+          value={draft.notes} onChange={e=>set("notes",e.target.value)} />
+        {liveTags.length>0 &&
+          <div className="pill-list">
+            {liveTags.map(t=>(
+              <span key={t.tag} className={"chip tag"+(t.redFlag?" red":"")}>{t.redFlag?"⚠️ ":""}{t.label}</span>
+            ))}
+          </div>}
+        <div className="row" style={{marginTop:12}}>
+          <button className="btn" onClick={save}>{existing?"Update":"Save"} check-in</button>
+          <span className="muted small">{logs.length} day{logs.length===1?"":"s"} logged</span>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h2>What this suggests <span className="sub">· guidance, not diagnosis</span></h2>
+        {evald.recs.length
+          ? evald.recs.map((r,i)=><Alert key={i} rec={r}/>)
+          : <div className="alert info"><span className="ic">✅</span><div>Nothing concerning flagged today. Nice and steady.</div></div>}
+      </div>
+    </>
+  );
+}
+
+/* ---------- DASHBOARD ---------- */
+function DashboardTab({ db, cat }){
+  const logs = logsFor(db, cat.id);
+  const recent = logs.slice(-14);
+  const tags = aggregateTags(recent).map(t=>({tag:t}));
+  const evald = evaluate({ cat, recentLogs: recent, tags });
+  const wt = weightTrend(cat, logs);
+  const ideal = idealCalories(cat);
+  const nudges = computeNudges(cat, logs);
+  const foodDocs = retrieve(["diet"], "feeding portion "+(cat.food||""), 2);
+  const stage = lifeStage(cat);
+  const longHair = /(persian|maine|ragdoll|long)/i.test(cat.breed||"");
+
+  return (
+    <>
+      <div className="grid g3">
+        <div className="kpi"><span className="v">{logs.length}</span><span className="l">days logged</span></div>
+        <div className="kpi"><span className="v">{cat.weight||"—"} <span className="l" style={{display:"inline"}}>{cat.weightUnit}</span></span>
+          <span className="l">current weight {wt?`(${wt.pct>=0?"+":""}${wt.pct.toFixed(0)}%)`:""}</span></div>
+        <div className="kpi"><span className="v">{ideal?ideal.kcal:"—"}</span>
+          <span className="l">{ideal?"kcal/day target":"set weight for target"}</span></div>
+      </div>
+
+      <div className="panel">
+        <h2>Health overview <span className="sub">· last {recent.length} day(s)</span></h2>
+        {evald.recs.length
+          ? evald.recs.map((r,i)=><Alert key={i} rec={r}/>)
+          : <div className="alert info"><span className="ic">✅</span><div>No concerning signals from recent logs. Keep up the daily check-ins.</div></div>}
+      </div>
+
+      <div className="grid g2">
+        <div className="panel">
+          <h2>Trends</h2>
+          <Trend label="Appetite" vals={recent.map(l=>scoreAppetite(l.appetite))}/>
+          <Trend label="Energy" vals={recent.map(l=>scoreEnergy(l.energy))}/>
+          {wt
+            ? <><div className="muted small" style={{marginTop:8}}>Weight: {wt.first} → {wt.last} {cat.weightUnit}</div>
+                <Sparkline vals={logs.filter(l=>l.weight).map(l=>parseFloat(l.weight))}/></>
+            : <div className="muted small" style={{marginTop:8}}>Log weight a few times to see a weight trend.</div>}
+        </div>
+        <div className="panel">
+          <h2>🍽️ Food guidance</h2>
+          <p className="small">Current food: <b>{cat.food||"not set"}</b> · schedule: <b>{cat.feeding||"not set"}</b></p>
+          {ideal
+            ? <div className="alert info"><span className="ic">📏</span><div>Target ≈ <b>{ideal.kcal} kcal/day</b> for an ideal weight of {ideal.ideal} {cat.weightUnit}. Split across {stage==="kitten"?"3–4":"2"} measured meals. Match this to the calorie chart on your food's label.</div></div>
+            : <div className="alert monitor"><span className="ic">📏</span><div>Add your cat's weight in the profile to get a daily calorie target.</div></div>}
+          <div className="row" style={{marginTop:6}}>
+            {["Prioritize wet food for hydration","Measure portions, avoid free-feeding","Fresh water / fountain available"].map(t=>
+              <span key={t} className="chip tag">✓ {t}</span>)}
+          </div>
+          <p className="small muted" style={{marginTop:8}}>From: {foodDocs.map(d=>d.source).join("; ")}</p>
+        </div>
+      </div>
+
+      <div className="grid g2">
+        <div className="panel">
+          <h2>🧶 Care routine</h2>
+          {[
+            {i:"🪥",t:"Dental: brush with cat-safe enzymatic toothpaste; watch for bad breath/red gums."},
+            {i:"🧴",t:`Coat: brush ${longHair?"daily (long-haired)":"weekly"}; check for mats and fleas.`},
+            {i:"🐾",t:"Litter: N+1 boxes, scoop daily, unscented litter, quiet spot."},
+            {i:"🧗",t:"Enrichment: vertical space, scratching posts, hiding spots, daily play."},
+          ].map((x,i)=><div key={i} className="alert info"><span className="ic">{x.i}</span><div>{x.t}</div></div>)}
+        </div>
+        <div className="panel">
+          <h2>🔔 Proactive nudges</h2>
+          {nudges.map(n=>(
+            <div key={n.key} className="alert info"><span className="ic">{n.icon}</span>
+              <div>{n.text} {n.cadence && <span className="badge">{n.cadence}</span>}</div></div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+function Trend({ label, vals }){
+  const v = vals.filter(x=>x!=null);
+  if(!v.length) return <div className="small muted">{label}: no data yet</div>;
+  return <><div className="small" style={{marginTop:6}}>{label}</div><Sparkline vals={v}/></>;
+}
+
+/* ---------- CHAT ---------- */
+function ChatTab({ db, cat, update }){
+  const msgs = chatFor(db, cat.id);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const boxRef = useRef(null);
+
+  useEffect(()=>{ if(boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight; },[msgs.length, busy]);
+
+  async function submit(text){
+    const q = (text ?? input).trim();
+    if(!q || busy) return;
+    setInput("");
+    setBusy(true);
+    update(next=>{ (next.chats[cat.id] = next.chats[cat.id] || []).push({role:"user",text:q,ts:Date.now()}); });
+
+    const logs = logsFor(db, cat.id).slice(-7);
+    let reply = { text:"", meta:"" };
+    try {
+      const res = await fetch("/api/chat", {
+        method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({ question:q, cat, logs }),
+      });
+      const data = await res.json();
+      if(data.error) throw new Error(data.error);
+      const engine = data.used==="claude" ? "Claude" : "built-in engine";
+      reply = { text:data.text, meta:`${engine} · sources: ${(data.sources||[]).join("; ")||"—"}` };
+    } catch(e){
+      reply = { text:`Sorry — I couldn't reach the assistant service. (${e.message})`, meta:"error" };
+    }
+    update(next=>{ (next.chats[cat.id] = next.chats[cat.id] || []).push({role:"bot",text:reply.text,meta:reply.meta,ts:Date.now()}); });
+    setBusy(false);
+  }
+
+  const quick = ["He isn't eating much","How much should I feed her?","Drinking a lot lately","Bad breath and drooling"];
+
+  return (
+    <div className="panel chat">
+      <h2>Assistant <span className="sub">· knowledge-grounded · {cat.name}</span></h2>
+      <div className="msgs" ref={boxRef}>
+        {msgs.length===0
+          ? <div className="empty">Ask me anything about {cat.name} — feeding, a worrying sign, grooming, behavior…<br/>
+              <span className="small">e.g. "She's been drinking a lot and eating less"</span></div>
+          : msgs.map((m,i)=>(
+              <div key={i} className={"msg "+(m.role==="user"?"user":"bot")}>
+                {m.text}{m.meta && <span className="meta">{m.meta}</span>}
+              </div>))}
+        {busy && <div className="msg bot">…</div>}
+      </div>
+      <div className="chatbar">
+        <input placeholder="Type a question or describe what you're noticing…" value={input}
+          onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") submit(); }} disabled={busy}/>
+        <button className="btn" onClick={()=>submit()} disabled={busy}>Send</button>
+      </div>
+      <div className="row" style={{marginTop:8}}>
+        {quick.map(q=><span key={q} className="chip" onClick={()=>submit(q)}>{q}</span>)}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- KNOWLEDGE ---------- */
+function KnowledgeTab(){
+  const [q, setQ] = useState("");
+  const types = {vet:"🏥 Veterinary",breed:"🐈 Breed",community:"💬 Community",product:"🛒 Product"};
+  const ql = q.toLowerCase();
+  const shown = DOCS.filter(d => (d.title+" "+d.body+" "+d.tags.join(" ")).toLowerCase().includes(ql));
+  return (
+    <div className="panel">
+      <h2>Knowledge base <span className="sub">· {DOCS.length} curated entries</span></h2>
+      <p className="muted small">These are the sources the assistant retrieves from (RAG). Veterinary sources are weighted
+        highest; community and product entries are clearly labeled as opinion.</p>
+      <input placeholder="Search the knowledge base…" value={q} onChange={e=>setQ(e.target.value)} style={{margin:"10px 0"}}/>
+      {shown.map(d=>(
+        <div key={d.id} className="kb-card">
+          <h3>{d.title} <span className="badge">{types[d.sourceType]||d.sourceType}</span></h3>
+          <div className="small">{d.body}</div>
+          <div className="small muted" style={{marginTop:6}}>Source: {d.source}</div>
+        </div>
+      ))}
+      {shown.length===0 && <div className="empty">No entries match “{q}”.</div>}
+    </div>
+  );
+}
+
+/* ---------- PROFILE ---------- */
+const BREEDS = ["Domestic Shorthair","Domestic Longhair","Maine Coon","Persian","Siamese","Ragdoll","Bengal","British Shorthair","Sphynx","Russian Blue","Tabby","Abyssinian"];
+function ProfileTab({ db, cat, update, flash, setTab }){
+  const blank = { name:"", age:"", ageUnit:"years", breed:"", sex:"female", weight:"", weightUnit:"lb", neutered:true, food:"", feeding:"", conditions:"" };
+  const [form, setForm] = useState(()=> cat ? {...blank, ...cat} : blank);
+  const editingId = cat?.id || null;
+  useEffect(()=>{ setForm(cat ? {...blank, ...cat} : blank); /* eslint-disable-next-line */ },[cat?.id]);
+  const set = (k,v)=>setForm(f=>({...f,[k]:v}));
+
+  function save(){
+    const data = { ...form, name: (form.name||"").trim()||"My cat", neutered: !!form.neutered };
+    if(editingId){
+      update(next=>{ const c=next.cats.find(c=>c.id===editingId); if(c) Object.assign(c,data); });
+      flash("Profile saved");
+    } else {
+      const id = uid();
+      update(next=>{ next.cats.push({id,createdAt:todayStr(),...data}); next.activeCatId=id; });
+      flash("Cat created");
+    }
+    setTab("today");
+  }
+  function del(){
+    if(!confirm("Delete "+cat.name+" and all their logs?")) return;
+    update(next=>{
+      next.cats = next.cats.filter(c=>c.id!==cat.id);
+      delete next.logs[cat.id]; delete next.chats[cat.id];
+      next.activeCatId = next.cats[0]?.id || null;
+    });
+    flash("Deleted");
+  }
+
+  return (
+    <div className="panel">
+      <h2>{cat?"Edit profile":"Add your cat"}</h2>
+      {db.cats.length>1 &&
+        <><label className="f">Switch cat</label>
+        <select value={db.activeCatId} onChange={e=>update(next=>{next.activeCatId=e.target.value;})}>
+          {db.cats.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select></>}
+      <div className="grid g2">
+        <div>
+          <label className="f">Name</label>
+          <input value={form.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Mochi"/>
+          <label className="f">Age</label>
+          <div className="row">
+            <input type="number" step="0.1" value={form.age} onChange={e=>set("age",e.target.value)} style={{flex:2}}/>
+            <select value={form.ageUnit} onChange={e=>set("ageUnit",e.target.value)} style={{flex:1}}>
+              <option value="years">years</option><option value="months">months</option></select>
+          </div>
+          <label className="f">Breed</label>
+          <input list="breeds" value={form.breed} onChange={e=>set("breed",e.target.value)} placeholder="e.g. Domestic Shorthair"/>
+          <datalist id="breeds">{BREEDS.map(b=><option key={b} value={b}/>)}</datalist>
+          <label className="f">Sex</label>
+          <select value={form.sex} onChange={e=>set("sex",e.target.value)}>
+            <option value="female">female</option><option value="male">male</option></select>
+        </div>
+        <div>
+          <label className="f">Weight</label>
+          <div className="row">
+            <input type="number" step="0.1" value={form.weight} onChange={e=>set("weight",e.target.value)} style={{flex:2}}/>
+            <select value={form.weightUnit} onChange={e=>set("weightUnit",e.target.value)} style={{flex:1}}>
+              <option value="lb">lb</option><option value="kg">kg</option></select>
+          </div>
+          <label className="f">Spayed / neutered?</label>
+          <select value={form.neutered?"true":"false"} onChange={e=>set("neutered",e.target.value==="true")}>
+            <option value="true">yes</option><option value="false">no</option></select>
+          <label className="f">Current food (brand / type)</label>
+          <input value={form.food} onChange={e=>set("food",e.target.value)} placeholder="e.g. Hill's Science Diet Adult, wet"/>
+          <label className="f">Feeding schedule</label>
+          <input value={form.feeding} onChange={e=>set("feeding",e.target.value)} placeholder="e.g. 2 meals/day, 1/4 cup each"/>
+          <label className="f">Medical history / conditions</label>
+          <textarea value={form.conditions} onChange={e=>set("conditions",e.target.value)} placeholder="e.g. early kidney disease, sensitive stomach"/>
+        </div>
+      </div>
+      <div className="row" style={{marginTop:14}}>
+        <button className="btn" onClick={save}>{cat?"Save changes":"Create profile"}</button>
+        {cat && <button className="btn ghost" onClick={()=>update(next=>{next.activeCatId=null;})}>+ Add another cat</button>}
+        {cat && <button className="btn ghost" onClick={del} style={{marginLeft:"auto",color:"var(--bad)"}}>Delete {cat.name}</button>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- SETTINGS ---------- */
+function SettingsTab({ db, update, flash, setTab }){
+  const fileRef = useRef(null);
+  function exportData(){
+    const blob = new Blob([JSON.stringify(db,null,2)], {type:"application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "purrfectcare-backup.json"; a.click();
+  }
+  function importData(e){
+    const f = e.target.files?.[0]; if(!f) return;
+    const r = new FileReader();
+    r.onload = ()=>{ try{ const parsed = JSON.parse(r.result); update(next=>{ Object.assign(next, blankDb(), parsed); }); flash("Imported"); }catch{ alert("Invalid file"); } };
+    r.readAsText(f);
+  }
+  function reset(){
+    if(!confirm("Erase ALL cats, logs and chats? This cannot be undone.")) return;
+    update(next=>{ const b=blankDb(); Object.keys(next).forEach(k=>delete next[k]); Object.assign(next,b); });
+    flash("Erased"); setTab("profile");
+  }
+  return (
+    <div className="panel">
+      <h2>Settings</h2>
+
+      <h3 style={{margin:"8px 0 2px",fontSize:14}}>🤖 AI engine</h3>
+      <p className="muted small">
+        The assistant runs server-side at <code>/api/chat</code>. It uses the <b>ANTHROPIC_API_KEY</b> environment
+        variable — set in your <code>.env.local</code> for local dev and in your Vercel project's Environment
+        Variables for production. The key never reaches the browser. If no key is set, the app automatically falls
+        back to the built-in, guardrailed rule engine, so it always works.
+      </p>
+
+      <h3 style={{margin:"18px 0 2px",fontSize:14}}>💾 Your data</h3>
+      <p className="muted small">Stored locally in this browser. Export to back up, or import to restore.
+        (Cross-device sync arrives when you add the Postgres layer — see the README.)</p>
+      <div className="row">
+        <button className="btn ghost" onClick={exportData}>⬇️ Export JSON</button>
+        <button className="btn ghost" onClick={()=>fileRef.current?.click()}>⬆️ Import JSON</button>
+        <input ref={fileRef} type="file" accept="application/json" onChange={importData} style={{display:"none"}}/>
+        <button className="btn ghost" onClick={reset} style={{marginLeft:"auto",color:"var(--bad)"}}>Erase all data</button>
+      </div>
+    </div>
+  );
+}
