@@ -16,8 +16,8 @@ import { compute as computeNudges } from "../lib/nudges.js";
 import { seedTasks, taskStatus, todayNum, dueCount } from "../lib/maintenance.js";
 
 const TABS = [
-  ["today","📋 Today"],["dashboard","📊 Dashboard"],["calendar","🗓️ Calendar"],["chat","💬 Assistant"],
-  ["knowledge","📚 Knowledge"],["profile","🐱 Profile"],["settings","⚙️ Settings"],
+  ["today","📋 Today"],["dashboard","📊 Dashboard"],["calendar","🗓️ Calendar"],["photos","📸 Photos"],
+  ["chat","💬 Assistant"],["knowledge","📚 Knowledge"],["profile","🐱 Profile"],["settings","⚙️ Settings"],
 ];
 
 export default function Page(){
@@ -47,38 +47,39 @@ export default function Page(){
   const needCat = !cat && tab !== "profile" && tab !== "settings";
 
   return (
-    <div className="app">
-      <header className="top">
-        <div className="logo"><CatMark/></div>
-        <div className="brand">PurrfectCare<small>cat care assistant · guidance, not diagnosis</small></div>
-        <div className="spacer" />
-        <div className="catpill" onClick={()=>setTab("profile")} title="Switch / edit cat">
-          <span className="dot" /> {cat ? cat.name : "No cat yet"} <span className="muted">▾</span>
+    <div className="layout">
+      <aside className="sidebar">
+        <div className="brandbox">
+          <div className="logo"><CatMark/></div>
+          <div className="brand">PurrfectCare<small>cat care companion</small></div>
         </div>
-      </header>
+        <div className="catpill" onClick={()=>setTab("profile")} title="Switch / edit cat">
+          {cat && cat.photo ? <img className="cat-avatar" src={cat.photo} alt="" /> : <span className="dot" />} {cat ? cat.name : "No cat yet"} <span className="muted">▾</span>
+        </div>
+        <nav className="snav">
+          {TABS.map(([id,labelTxt])=>(
+            <button key={id} className={tab===id?"active":""} onClick={()=>setTab(id)}>{labelTxt}</button>
+          ))}
+        </nav>
+      </aside>
 
-      <nav className="tabs">
-        {TABS.map(([id,labelTxt])=>(
-          <button key={id} className={tab===id?"active":""} onClick={()=>setTab(id)}>{labelTxt}</button>
-        ))}
-      </nav>
-
-      <main>
+      <main className="content">
         {needCat ? <Welcome onAdd={()=>setTab("profile")} />
           : tab==="today" ? <TodayTab db={db} cat={cat} update={update} flash={flash} />
           : tab==="dashboard" ? <DashboardTab db={db} cat={cat} />
           : tab==="calendar" ? <CalendarTab db={db} cat={cat} update={update} flash={flash} />
+          : tab==="photos" ? <PhotosTab db={db} cat={cat} update={update} flash={flash} />
           : tab==="chat" ? <ChatTab db={db} cat={cat} update={update} />
           : tab==="knowledge" ? <KnowledgeTab />
           : tab==="profile" ? <ProfileTab db={db} cat={cat} update={update} flash={flash} setTab={setTab} />
           : <SettingsTab db={db} update={update} flash={flash} setTab={setTab} />}
-      </main>
 
-      <p className="disc">
-        PurrfectCare offers general, educational guidance drawn from veterinary sources (AVMA, Cornell Feline
-        Health Center, ASPCA) and community discussion. It is <b>not a veterinarian</b> and does not diagnose.
-        For any urgent or worsening sign, contact a veterinarian or an emergency clinic.
-      </p>
+        <p className="disc">
+          PurrfectCare offers general, educational guidance drawn from veterinary sources (AVMA, Cornell Feline
+          Health Center, ASPCA) and community discussion. It is <b>not a veterinarian</b> and does not diagnose.
+          For any urgent or worsening sign, contact a veterinarian or an emergency clinic.
+        </p>
+      </main>
 
       {toast && <div className="toast">{toast}</div>}
     </div>
@@ -293,6 +294,56 @@ function TodayTab({ db, cat, update, flash }){
   );
 }
 
+/* ---------- dashboard triage: merge behavior signals + tasks, by priority ---------- */
+function firstSentence(body){
+  const m = String(body||"").match(/^.*?[.!?](\s|$)/);
+  const s = m ? m[0].trim() : String(body||"");
+  return s.length>120 ? s.slice(0,117)+"…" : s;
+}
+function buildTriage({ evald, tasks, today, careNudges }){
+  const warnings=[], actions=[], upcoming=[];
+  // cat behavior / health signals
+  evald.recs.forEach(r=>{
+    const conf = r.confidence ? ` · ${r.confidence.label} confidence` : "";
+    const item = {
+      icon: r.severity==="escalate" ? "🚑" : r.severity==="monitor" ? "👀" : "💡",
+      title: r.title, detail: firstSentence(r.body) + conf,
+      tone: r.severity==="escalate" ? "bad" : r.severity==="monitor" ? "warn" : "info",
+    };
+    if(r.severity==="info") upcoming.push(item); else warnings.push(item);
+  });
+  // maintenance tasks
+  (tasks||[]).forEach(t=>{
+    const s = taskStatus(t, today);
+    if(s.state==="overdue") actions.push({ icon:t.icon, title:t.label, detail:s.label, tone:"warn" });
+    else if(s.state==="due") actions.push({ icon:t.icon, title:t.label, detail:"Due today", tone:"warn" });
+    else if(s.state==="upcoming" && s.daysUntil<=3) upcoming.push({ icon:t.icon, title:t.label, detail:s.label, tone:"info" });
+    else if(s.state==="new") upcoming.push({ icon:t.icon, title:t.label, detail:"Set a schedule", tone:"info" });
+  });
+  // care reminders
+  (careNudges||[]).forEach(n=>{
+    if(n.key==="log") actions.push({ icon:n.icon, title:n.text, detail:"", tone:"warn" });
+    else upcoming.push({ icon:n.icon, title:n.text, detail:n.cadence||"", tone:"info" });
+  });
+  return { warnings, actions, upcoming };
+}
+function TriageGroup({ label, items, empty, cap=6 }){
+  const shown = items.slice(0, cap), more = items.length - shown.length;
+  return (
+    <div className="tgroup">
+      <div className="tgroup-h">{label} <span className="tcount">{items.length}</span></div>
+      {shown.length
+        ? shown.map((it,i)=>(
+            <div key={i} className={"titem "+it.tone}>
+              <span className="ic">{it.icon}</span>
+              <div><div className="tt">{it.title}</div>{it.detail && <div className="td">{it.detail}</div>}</div>
+            </div>))
+        : <div className="tempty">{empty}</div>}
+      {more>0 && <div className="tmore">+{more} more</div>}
+    </div>
+  );
+}
+
 /* ---------- DASHBOARD ---------- */
 function DashboardTab({ db, cat }){
   const logs = logsFor(db, cat.id);
@@ -301,12 +352,8 @@ function DashboardTab({ db, cat }){
   const evald = evaluate({ cat, recentLogs: recent, tags, allLogs: logs });
   const wt = weightTrend(cat, logs);
   const ideal = idealCalories(cat);
-  const upkeep = db.maintenance && db.maintenance[cat.id];
-  const mDue = upkeep ? dueCount(upkeep, todayNum()) : 0;
-  const nudges = [
-    ...(mDue>0 ? [{key:"upkeep",icon:"🗓️",text:`${mDue} upkeep task${mDue===1?"":"s"} due or overdue — see the Calendar tab.`}] : []),
-    ...computeNudges(cat, logs),
-  ];
+  const tasks = (db.maintenance && db.maintenance[cat.id]) || [];
+  const tri = buildTriage({ evald, tasks, today: todayNum(), careNudges: computeNudges(cat, logs) });
   const foodDocs = retrieve(["diet"], "feeding portion "+(cat.food||""), 2);
   const stage = lifeStage(cat);
   const longHair = /(persian|maine|ragdoll|long)/i.test(cat.breed||"");
@@ -322,10 +369,10 @@ function DashboardTab({ db, cat }){
       </div>
 
       <div className="panel">
-        <h2>Health overview <span className="sub">· last {recent.length} day(s)</span></h2>
-        {evald.recs.length
-          ? evald.recs.map((r,i)=><Alert key={i} rec={r}/>)
-          : <div className="alert info"><span className="ic">✅</span><div>No concerning signals from recent logs. Keep up the daily check-ins.</div></div>}
+        <h2>What needs attention <span className="sub">· {cat.name} · behavior &amp; tasks</span></h2>
+        <TriageGroup label="⚠️ Warnings" items={tri.warnings} empty={`No health warnings — ${cat.name} looks good ✅`}/>
+        <TriageGroup label="✅ Actions" items={tri.actions} empty="Nothing to do right now 🙌"/>
+        <TriageGroup label="🔜 Upcoming" items={tri.upcoming} empty="Nothing on the horizon"/>
       </div>
 
       <div className="grid g2">
@@ -352,22 +399,15 @@ function DashboardTab({ db, cat }){
         </div>
       </div>
 
-      <div className="grid g2">
-        <div className="panel">
-          <h2>🧶 Care routine</h2>
+      <div className="panel">
+        <h2>🧶 Care routine <span className="sub">· general best practices</span></h2>
+        <div className="grid g2">
           {[
             {i:"🪥",t:"Dental: brush with cat-safe enzymatic toothpaste; watch for bad breath/red gums."},
             {i:"🧴",t:`Coat: brush ${longHair?"daily (long-haired)":"weekly"}; check for mats and fleas.`},
             {i:"🐾",t:"Litter: N+1 boxes, scoop daily, unscented litter, quiet spot."},
             {i:"🧗",t:"Enrichment: vertical space, scratching posts, hiding spots, daily play."},
           ].map((x,i)=><div key={i} className="alert info"><span className="ic">{x.i}</span><div>{x.t}</div></div>)}
-        </div>
-        <div className="panel">
-          <h2>🔔 Proactive nudges</h2>
-          {nudges.map(n=>(
-            <div key={n.key} className="alert info"><span className="ic">{n.icon}</span>
-              <div>{n.text} {n.cadence && <span className="badge">{n.cadence}</span>}</div></div>
-          ))}
         </div>
       </div>
     </>
@@ -532,16 +572,168 @@ function CalendarTab({ db, cat, update, flash }){
   );
 }
 
+/* ---------- PHOTOS (visual log) ---------- */
+// Downscale + re-encode to JPEG so base64 photos stay small in localStorage.
+function resizeImage(file, maxDim, quality){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if(w >= h && w > maxDim){ h = Math.round(h*maxDim/w); w = maxDim; }
+        else if(h > w && h > maxDim){ w = Math.round(w*maxDim/h); h = maxDim; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const PHOTO_AREAS = ["General","Eyes","Ears","Mouth/Teeth","Skin/Coat","Paws/Nails","Litter/Stool","Wound/Lump","Other"];
+const concernLabel = c => c==="vet" ? "See a vet" : c==="monitor" ? "Monitor" : "Looks OK";
+function PhotosTab({ db, cat, update, flash }){
+  const photos = (db.photos && db.photos[cat.id]) || [];
+  const fileRef = useRef(null);
+  const [area, setArea] = useState("General");
+  const [caption, setCaption] = useState("");
+  const [busyId, setBusyId] = useState(null);
+  const [trendArea, setTrendArea] = useState("");
+  const [trend, setTrend] = useState(null);   // null | "loading" | {area,concern,summary,advice}
+  const lite = { name:cat.name, age:cat.age, ageUnit:cat.ageUnit, breed:cat.breed, conditions:cat.conditions };
+
+  async function onFile(e){
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if(!f) return;
+    try{
+      const dataUrl = await resizeImage(f, 1000, 0.72);
+      update(next=>{
+        next.photos = next.photos || {};
+        (next.photos[cat.id] = next.photos[cat.id] || []).push({
+          id: uid(), dataUrl, date: new Date().toISOString().slice(0,10),
+          area, caption: caption.trim(), ts: Date.now(),
+        });
+      });
+      setCaption(""); flash("Photo added 📸");
+    }catch{ alert("Sorry — couldn't process that image."); }
+  }
+  const remove = (id)=> update(next=>{ next.photos[cat.id] = (next.photos[cat.id]||[]).filter(p=>p.id!==id); });
+
+  async function analyzeOne(p){
+    setBusyId(p.id);
+    try{
+      const res = await fetch("/api/analyze", { method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({ images:[{ base64:p.dataUrl.split(",")[1], mediaType:"image/jpeg", date:p.date, area:p.area }], cat:lite, context:p.caption }) });
+      const data = await res.json();
+      if(data.error){ alert(data.error); return; }
+      update(next=>{ const ph=(next.photos[cat.id]||[]).find(x=>x.id===p.id); if(ph) ph.analysis = { summary:data.summary, advice:data.advice, concern:data.concern, ts:Date.now() }; });
+      flash("Analyzed ✓");
+    }catch(err){ alert("Analysis failed: "+err.message); }
+    finally{ setBusyId(null); }
+  }
+
+  async function analyzeTrend(){
+    if(!trendArea) return;
+    const imgs = photos.filter(p=>p.area===trendArea).sort((a,b)=>a.ts-b.ts).slice(-4)
+      .map(p=>({ base64:p.dataUrl.split(",")[1], mediaType:"image/jpeg", date:p.date, area:p.area }));
+    if(imgs.length<2){ alert("Need at least 2 photos in this area to compare."); return; }
+    setTrend("loading");
+    try{
+      const res = await fetch("/api/analyze", { method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({ images:imgs, cat:lite }) });
+      const data = await res.json();
+      if(data.error){ setTrend(null); alert(data.error); return; }
+      setTrend({ area:trendArea, concern:data.concern, summary:data.summary, advice:data.advice });
+    }catch(err){ setTrend(null); alert("Trend analysis failed: "+err.message); }
+  }
+
+  const sorted = [...photos].sort((a,b)=> b.ts - a.ts);
+  const areaCounts = {}; photos.forEach(p=>{ areaCounts[p.area]=(areaCounts[p.area]||0)+1; });
+  const multiAreas = Object.keys(areaCounts).filter(a=>areaCounts[a]>=2);
+
+  return (
+    <div className="panel">
+      <h2>📸 Photos <span className="sub">· {cat.name} · for fun &amp; tracking visual cues</span></h2>
+      <p className="muted small">Keep a visual record — coat, eyes, skin, a lump you're watching, even litter. Tag the
+        area so you can compare over time. <b>🔍 Analyze</b> asks Claude to read a photo for visible concerns
+        (needs your ANTHROPIC_API_KEY). Photos stay private in your browser. Guidance, not a diagnosis.</p>
+
+      <div className="row" style={{margin:"12px 0"}}>
+        <select value={area} onChange={e=>setArea(e.target.value)} style={{width:150}}>
+          {PHOTO_AREAS.map(a=><option key={a}>{a}</option>)}
+        </select>
+        <input placeholder="Caption (optional) — e.g. “left eye watery”" value={caption}
+          onChange={e=>setCaption(e.target.value)} style={{flex:2, minWidth:180}}/>
+        <button className="btn" onClick={()=>fileRef.current && fileRef.current.click()}>📷 Upload</button>
+        <input ref={fileRef} type="file" accept="image/*" onChange={onFile} style={{display:"none"}}/>
+      </div>
+
+      {multiAreas.length>0 &&
+        <div className="row" style={{margin:"0 0 12px"}}>
+          <span className="small muted">📈 Trend:</span>
+          <select value={trendArea} onChange={e=>setTrendArea(e.target.value)} style={{width:160}}>
+            <option value="">Choose an area…</option>
+            {multiAreas.map(a=><option key={a}>{a} ({areaCounts[a]})</option>)}
+          </select>
+          <button className="btn ghost sm" onClick={analyzeTrend} disabled={!trendArea || trend==="loading"}>
+            {trend==="loading" ? "Analyzing…" : "Analyze over time"}</button>
+        </div>}
+      {trend && trend!=="loading" &&
+        <div className={"alert "+(trend.concern==="vet"?"escalate":trend.concern==="monitor"?"monitor":"info")}>
+          <span className="ic">📈</span>
+          <div><b>{trend.area} — change over time</b><br/>{trend.summary}{trend.advice?` ${trend.advice}`:""}
+            <span className="src">Visual guidance from Claude · not a diagnosis</span></div>
+        </div>}
+
+      {sorted.length===0
+        ? <div className="empty">No photos yet — add your first one above. 🐱</div>
+        : <div className="photo-grid">
+            {sorted.map(p=>(
+              <div key={p.id} className="photo-card">
+                <img src={p.dataUrl} alt={p.caption || p.area}/>
+                <button className="photo-del" title="Delete photo" onClick={()=>remove(p.id)}>✕</button>
+                <div className="photo-meta">
+                  <span className="badge">{p.area}</span> <span className="muted small">{p.date}</span>
+                  {p.caption && <div className="small">{p.caption}</div>}
+                  {p.analysis
+                    ? <div className="photo-analysis">
+                        <span className={"concern "+p.analysis.concern}>{concernLabel(p.analysis.concern)}</span>
+                        <span className="small"> {p.analysis.summary}</span>
+                        {p.analysis.advice && <div className="small muted">{p.analysis.advice}</div>}
+                      </div>
+                    : <button className="btn ghost sm" style={{marginTop:7}} disabled={busyId===p.id} onClick={()=>analyzeOne(p)}>
+                        {busyId===p.id ? "Analyzing…" : "🔍 Analyze"}</button>}
+                </div>
+              </div>
+            ))}
+          </div>}
+    </div>
+  );
+}
+
 /* ---------- PROFILE ---------- */
 const BREEDS = ["Domestic Shorthair","Domestic Longhair","Maine Coon","Persian","Siamese","Ragdoll","Bengal","British Shorthair","Sphynx","Russian Blue","Tabby","Abyssinian"];
 // Per-food appetite: "Ate well"=normal, "Some"=low, "None"=none, "N/A"=not offered
 const APP_OPTS = [{v:"normal",label:"Ate well"},{v:"low",label:"Some"},{v:"none",label:"None"},{v:"na",label:"N/A"}];
 function ProfileTab({ db, cat, update, flash, setTab }){
-  const blank = { name:"", age:"", ageUnit:"years", breed:"", sex:"female", weight:"", weightUnit:"lb", neutered:true, food:"", feeding:"", conditions:"" };
+  const blank = { name:"", age:"", ageUnit:"years", breed:"", sex:"female", weight:"", weightUnit:"lb", neutered:true, food:"", feeding:"", conditions:"", photo:"" };
   const [form, setForm] = useState(()=> cat ? {...blank, ...cat} : blank);
   const editingId = cat?.id || null;
   useEffect(()=>{ setForm(cat ? {...blank, ...cat} : blank); /* eslint-disable-next-line */ },[cat?.id]);
   const set = (k,v)=>setForm(f=>({...f,[k]:v}));
+  const avatarRef = useRef(null);
+  async function onAvatar(e){
+    const f = e.target.files && e.target.files[0]; e.target.value="";
+    if(!f) return;
+    try{ set("photo", await resizeImage(f, 320, 0.82)); }catch{ alert("Sorry — couldn't process that image."); }
+  }
 
   function save(){
     const data = { ...form, name: (form.name||"").trim()||"My cat", neutered: !!form.neutered };
@@ -573,6 +765,13 @@ function ProfileTab({ db, cat, update, flash, setTab }){
         <select value={db.activeCatId} onChange={e=>update(next=>{next.activeCatId=e.target.value;})}>
           {db.cats.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
         </select></>}
+      <label className="f">Photo</label>
+      <div className="row" style={{alignItems:"center"}}>
+        {form.photo ? <img src={form.photo} className="avatar-lg" alt=""/> : <div className="avatar-lg ph"><CatMark/></div>}
+        <button type="button" className="btn ghost sm" onClick={()=>avatarRef.current && avatarRef.current.click()}>{form.photo?"Change photo":"Upload photo"}</button>
+        {form.photo && <button type="button" className="btn ghost sm" onClick={()=>set("photo","")}>Remove</button>}
+        <input ref={avatarRef} type="file" accept="image/*" onChange={onAvatar} style={{display:"none"}}/>
+      </div>
       <div className="grid g2">
         <div>
           <label className="f">Name</label>
