@@ -36,7 +36,7 @@ export async function POST(req){
   const tags = matchTags(question);
   const recentLogs = Array.isArray(logs) ? logs.slice(-7) : [];
   const docs = retrieve(tags.map(t=>t.tag), question, 4);
-  const evald = evaluate({ cat, recentLogs, tags });
+  const evald = evaluate({ cat, recentLogs, tags, allLogs: Array.isArray(logs) ? logs : [] });
   const sources = docs.slice(0,3).map(d => d.source);
 
   // 4: Claude (if a key is present)

@@ -11,6 +11,7 @@ import { loadDb, saveDb, blankDb, uid, todayStr, activeCat, logsFor, chatFor } f
 import { matchTags, isRedFlag, label as tagLabel } from "../lib/nlp.js";
 import { DOCS, retrieve } from "../lib/knowledge.js";
 import { evaluate, weightTrend, ageInYears } from "../lib/reasoning.js";
+import { overallAppetite } from "../lib/signals.js";
 import { compute as computeNudges } from "../lib/nudges.js";
 
 const TABS = [
@@ -142,6 +143,7 @@ function Alert({ rec }){
       <span className="ic">{ic}</span>
       <div>
         <b>{rec.title}</b><br/>{rec.body}
+        {rec.confidence ? <span className={"conf conf-"+rec.confidence.label}>📊 Confidence: {rec.confidence.label} · {rec.confidence.reason}</span> : null}
         {rec.sources?.length ? <span className="src">Source: {rec.sources.join(", ")}</span> : null}
       </div>
     </div>
@@ -165,14 +167,15 @@ function Sparkline({ vals }){
 /* ---------- metric helpers (client) ---------- */
 function deriveLogTags(l){
   const t=[];
-  if(l.appetite==="low"||l.appetite==="none") t.push("appetite_decline");
-  if(l.appetite==="high") t.push("appetite_increase");
+  const ap = overallAppetite(l);
+  if(ap==="low"||ap==="none") t.push("appetite_decline");
   if(l.energy==="low") t.push("lethargy");
   if(l.water==="high") t.push("excessive_thirst");
-  if(l.litter==="diarrhea") t.push("diarrhea");
-  if(l.litter==="constipated") t.push("constipation");
-  if(l.grooming==="over") t.push("overgrooming");
-  if(l.grooming==="under") t.push("grooming_decline");
+  const poop = l.poop || l.litter;              // back-compat with older "litter" field
+  if(poop==="loose"||poop==="diarrhea") t.push("diarrhea");
+  if(poop==="hard"||poop==="constipated") t.push("constipation");
+  if(l.vomit==="once") t.push("vomiting");
+  if(l.vomit==="multiple") t.push("repeated_vomiting");
   (l.tags||[]).forEach(x=>t.push(x));
   return t;
 }
@@ -197,12 +200,11 @@ function idealCalories(cat){
 function TodayTab({ db, cat, update, flash }){
   const logs = logsFor(db, cat.id);
   const existing = logs.find(l=>l.date===todayStr());
-  const [draft, setDraft] = useState(()=> existing ? {...existing} : {
-    appetite:"normal", energy:"normal", litter:"normal", water:"normal", grooming:"normal", weight:"", notes:""
-  });
+  const DRAFT0 = { appetiteDry:"normal", appetiteWet:"normal", poop:"normal", vomit:"none", water:"normal", energy:"normal", weight:"", notes:"" };
+  const [draft, setDraft] = useState(()=> existing ? {...DRAFT0, ...existing} : {...DRAFT0});
   useEffect(()=>{
     const ex = logsFor(db, cat.id).find(l=>l.date===todayStr());
-    setDraft(ex ? {...ex} : { appetite:"normal", energy:"normal", litter:"normal", water:"normal", grooming:"normal", weight:"", notes:"" });
+    setDraft(ex ? {...DRAFT0, ...ex} : {...DRAFT0});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[cat.id]);
 
@@ -212,8 +214,10 @@ function TodayTab({ db, cat, update, flash }){
   function save(){
     const log = {
       date: todayStr(),
-      appetite: draft.appetite||"normal", energy: draft.energy||"normal",
-      litter: draft.litter||"normal", water: draft.water||"normal", grooming: draft.grooming||"normal",
+      appetiteDry: draft.appetiteDry||"na", appetiteWet: draft.appetiteWet||"na",
+      appetite: overallAppetite(draft) || "normal",   // derived overall, for trends + baseline model
+      poop: draft.poop||"normal", vomit: draft.vomit||"none",
+      water: draft.water||"normal", energy: draft.energy||"normal",
       weight: draft.weight||"", notes: draft.notes||"",
       tags: matchTags(draft.notes||"").map(t=>t.tag),
     };
@@ -230,7 +234,7 @@ function TodayTab({ db, cat, update, flash }){
   // insights from this day's draft + recent history
   const recent = logs.slice(-7);
   const tags = matchTags(draft.notes||"").concat(deriveLogTags(draft).map(t=>({tag:t})));
-  const evald = evaluate({ cat, recentLogs: recent, tags });
+  const evald = evaluate({ cat, recentLogs: recent, tags, allLogs: logs });
 
   return (
     <>
@@ -239,28 +243,29 @@ function TodayTab({ db, cat, update, flash }){
         <p className="muted small">A 30-second log. The more days you record, the smarter the trends and nudges get.</p>
         <div className="grid g2">
           <div>
-            <label className="f">Appetite</label>
-            <Seg value={draft.appetite} onChange={v=>set("appetite",v)} options={[
-              {v:"normal",label:"Normal"},{v:"high",label:"High"},{v:"low",label:"Low"},{v:"none",label:"Not eating"}]}/>
-            <label className="f">Energy</label>
-            <Seg value={draft.energy} onChange={v=>set("energy",v)} options={[
-              {v:"playful",label:"Playful"},{v:"normal",label:"Normal"},{v:"low",label:"Lethargic"}]}/>
-            <label className="f">Litter box</label>
-            <Seg value={draft.litter} onChange={v=>set("litter",v)} options={[
-              {v:"normal",label:"Normal"},{v:"diarrhea",label:"Loose"},{v:"constipated",label:"Straining"},{v:"none",label:"None seen"}]}/>
+            <label className="f">🥣 Dry food appetite</label>
+            <Seg value={draft.appetiteDry} onChange={v=>set("appetiteDry",v)} options={APP_OPTS}/>
+            <label className="f">🐟 Wet food appetite</label>
+            <Seg value={draft.appetiteWet} onChange={v=>set("appetiteWet",v)} options={APP_OPTS}/>
+            <label className="f">💩 Poop</label>
+            <Seg value={draft.poop} onChange={v=>set("poop",v)} options={[
+              {v:"normal",label:"Normal"},{v:"loose",label:"Loose"},{v:"hard",label:"Hard/straining"},{v:"none",label:"None today"}]}/>
           </div>
           <div>
-            <label className="f">Water intake</label>
+            <label className="f">💧 Water intake</label>
             <Seg value={draft.water} onChange={v=>set("water",v)} options={[
-              {v:"normal",label:"Normal"},{v:"high",label:"Drinking a lot"},{v:"low",label:"Little"}]}/>
-            <label className="f">Grooming</label>
-            <Seg value={draft.grooming} onChange={v=>set("grooming",v)} options={[
-              {v:"normal",label:"Normal"},{v:"over",label:"Overgrooming"},{v:"under",label:"Not grooming"}]}/>
-            <label className="f">Weight today (optional, {cat.weightUnit})</label>
-            <input type="number" step="0.1" placeholder={`e.g. ${cat.weight||"10"}`} value={draft.weight}
-              onChange={e=>set("weight",e.target.value)} />
+              {v:"normal",label:"Normal"},{v:"high",label:"A lot"},{v:"low",label:"Little"}]}/>
+            <label className="f">⚡ Energy</label>
+            <Seg value={draft.energy} onChange={v=>set("energy",v)} options={[
+              {v:"playful",label:"Playful"},{v:"normal",label:"Normal"},{v:"low",label:"Lethargic"}]}/>
+            <label className="f">🤮 Vomiting</label>
+            <Seg value={draft.vomit} onChange={v=>set("vomit",v)} options={[
+              {v:"none",label:"None"},{v:"once",label:"Once"},{v:"multiple",label:"2+ times"}]}/>
           </div>
         </div>
+        <label className="f">⚖️ Weigh-in <span className="muted">— optional, only when you can (even weekly helps the trend)</span></label>
+        <input type="number" step="0.1" placeholder={`e.g. ${cat.weight||"10"} ${cat.weightUnit}`} value={draft.weight}
+          onChange={e=>set("weight",e.target.value)} style={{maxWidth:240}} />
         <label className="f">Anything else? (free text — I'll read it for signals)</label>
         <textarea placeholder="e.g. 'She didn't eat much today and seems a bit hidey'"
           value={draft.notes} onChange={e=>set("notes",e.target.value)} />
@@ -291,7 +296,7 @@ function DashboardTab({ db, cat }){
   const logs = logsFor(db, cat.id);
   const recent = logs.slice(-14);
   const tags = aggregateTags(recent).map(t=>({tag:t}));
-  const evald = evaluate({ cat, recentLogs: recent, tags });
+  const evald = evaluate({ cat, recentLogs: recent, tags, allLogs: logs });
   const wt = weightTrend(cat, logs);
   const ideal = idealCalories(cat);
   const nudges = computeNudges(cat, logs);
@@ -319,7 +324,7 @@ function DashboardTab({ db, cat }){
       <div className="grid g2">
         <div className="panel">
           <h2>Trends</h2>
-          <Trend label="Appetite" vals={recent.map(l=>scoreAppetite(l.appetite))}/>
+          <Trend label="Appetite" vals={recent.map(l=>scoreAppetite(overallAppetite(l)))}/>
           <Trend label="Energy" vals={recent.map(l=>scoreEnergy(l.energy))}/>
           {wt
             ? <><div className="muted small" style={{marginTop:8}}>Weight: {wt.first} → {wt.last} {cat.weightUnit}</div>
@@ -454,6 +459,8 @@ function KnowledgeTab(){
 
 /* ---------- PROFILE ---------- */
 const BREEDS = ["Domestic Shorthair","Domestic Longhair","Maine Coon","Persian","Siamese","Ragdoll","Bengal","British Shorthair","Sphynx","Russian Blue","Tabby","Abyssinian"];
+// Per-food appetite: "Ate well"=normal, "Some"=low, "None"=none, "N/A"=not offered
+const APP_OPTS = [{v:"normal",label:"Ate well"},{v:"low",label:"Some"},{v:"none",label:"None"},{v:"na",label:"N/A"}];
 function ProfileTab({ db, cat, update, flash, setTab }){
   const blank = { name:"", age:"", ageUnit:"years", breed:"", sex:"female", weight:"", weightUnit:"lb", neutered:true, food:"", feeding:"", conditions:"" };
   const [form, setForm] = useState(()=> cat ? {...blank, ...cat} : blank);

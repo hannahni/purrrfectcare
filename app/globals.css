@@ -142,6 +142,11 @@ textarea{resize:vertical;min-height:68px}
 .alert.monitor{background:var(--warn-soft);border-color:#f6e3bf;border-left:4px solid var(--warn)}
 .alert.escalate{background:var(--bad-soft);border-color:#f4c8c2;border-left:4px solid var(--bad)}
 .alert .src{display:block;margin-top:6px;font-size:11.5px;color:var(--muted)}
+.conf{display:block;width:fit-content;margin-top:9px;font-size:11.5px;font-weight:700;
+  padding:3px 10px;border-radius:999px;border:1px solid var(--line)}
+.conf-high{background:#e6f5ee;border-color:#bfe3d3;color:#1f7d5b}
+.conf-moderate{background:#fdf3e2;border-color:#f1d9a8;color:#9a6a12}
+.conf-low{background:#f1ede9;border-color:#e0d5c8;color:#857868}
 .pill-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 
 /* chat */
