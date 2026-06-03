@@ -239,6 +239,13 @@ function TodayTab({ db, cat, update, flash }){
   const tags = matchTags(draft.notes||"").concat(deriveLogTags(draft).map(t=>({tag:t})));
   const evald = evaluate({ cat, recentLogs: recent, tags, allLogs: logs });
 
+  // Tasks due/overdue today — surfaced here so you can check them off while logging.
+  const todoTasks = ((db.maintenance && db.maintenance[cat.id]) || [])
+    .map(t=>({ ...t, s: taskStatus(t, todayNum()) }))
+    .filter(t=> t.s.state==="overdue" || t.s.state==="due")
+    .sort((a,b)=> a.s.daysUntil - b.s.daysUntil);
+  const markTaskDone = (id)=>{ update(next=>{ const t=(next.maintenance[cat.id]||[]).find(x=>x.id===id); if(t) t.lastDone = todayStr(); }); flash("Marked done ✓"); };
+
   return (
     <>
       <div className="panel">
@@ -282,6 +289,18 @@ function TodayTab({ db, cat, update, flash }){
           <button className="btn" onClick={save}>{existing?"Update":"Save"} check-in</button>
           <span className="muted small">{logs.length} day{logs.length===1?"":"s"} logged</span>
         </div>
+      </div>
+
+      <div className="panel">
+        <h2>✅ To-do today <span className="sub">· {cat.name} · tasks due now</span></h2>
+        {todoTasks.length
+          ? todoTasks.map(t=>(
+              <div key={t.id} className={"mrow "+t.s.state}>
+                <span className="ic">{t.icon}</span>
+                <div className="mrow-main"><div className="mrow-title">{t.label} <span className="badge">{t.s.label}</span></div></div>
+                <div className="mrow-actions"><button className="btn sm" onClick={()=>markTaskDone(t.id)}>✓ Done</button></div>
+              </div>))
+          : <div className="alert info"><span className="ic">🙌</span><div>Nothing due today — you're all caught up. Check the Calendar for what's coming up.</div></div>}
       </div>
 
       <div className="panel">
@@ -369,9 +388,8 @@ function DashboardTab({ db, cat }){
       </div>
 
       <div className="panel">
-        <h2>What needs attention <span className="sub">· {cat.name} · behavior &amp; tasks</span></h2>
+        <h2>What needs attention <span className="sub">· {cat.name} · health &amp; what's coming up</span></h2>
         <TriageGroup label="⚠️ Warnings" items={tri.warnings} empty={`No health warnings — ${cat.name} looks good ✅`}/>
-        <TriageGroup label="✅ Actions" items={tri.actions} empty="Nothing to do right now 🙌"/>
         <TriageGroup label="🔜 Upcoming" items={tri.upcoming} empty="Nothing on the horizon"/>
       </div>
 
@@ -419,6 +437,44 @@ function Trend({ label, vals }){
   return <><div className="small" style={{marginTop:6}}>{label}</div><Sparkline vals={v}/></>;
 }
 
+/* ---------- lightweight markdown for assistant replies ---------- */
+// inline: **bold**, *italic* / _italic_, `code`, [text](url)
+function inlineFormat(str){
+  const nodes = [];
+  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\[([^\]]+)\]\(([^)]+)\))|(?:\*([^*\n]+)\*)|(?:_([^_\n]+)_)/g;
+  let last = 0, m, key = 0;
+  while((m = re.exec(str))){
+    if(m.index > last) nodes.push(str.slice(last, m.index));
+    if(m[1]) nodes.push(<strong key={key++}>{m[2]}</strong>);
+    else if(m[3]) nodes.push(<code key={key++}>{m[4]}</code>);
+    else if(m[5]) nodes.push(<a key={key++} href={m[7]} target="_blank" rel="noreferrer">{m[6]}</a>);
+    else if(m[8] != null) nodes.push(<em key={key++}>{m[8]}</em>);
+    else if(m[9] != null) nodes.push(<em key={key++}>{m[9]}</em>);
+    last = re.lastIndex;
+  }
+  if(last < str.length) nodes.push(str.slice(last));
+  return nodes;
+}
+// block: paragraphs, blank-line spacing, and bullet lists
+function renderRichText(text){
+  const lines = String(text||"").split("\n");
+  const blocks = []; let list = null; let key = 0;
+  const flush = ()=>{ if(list){ blocks.push(<ul key={key++} className="msg-ul">{list}</ul>); list = null; } };
+  lines.forEach((ln, idx)=>{
+    const bullet = ln.match(/^\s*[-*•]\s+(.*)$/);
+    if(bullet){
+      list = list || [];
+      list.push(<li key={idx}>{inlineFormat(bullet[1])}</li>);
+    } else {
+      flush();
+      if(ln.trim() === "") blocks.push(<div key={key++} className="msg-sp"/>);
+      else blocks.push(<div key={key++}>{inlineFormat(ln)}</div>);
+    }
+  });
+  flush();
+  return blocks;
+}
+
 /* ---------- CHAT ---------- */
 function ChatTab({ db, cat, update }){
   const msgs = chatFor(db, cat.id);
@@ -464,7 +520,8 @@ function ChatTab({ db, cat, update }){
               <span className="small">e.g. "She's been drinking a lot and eating less"</span></div>
           : msgs.map((m,i)=>(
               <div key={i} className={"msg "+(m.role==="user"?"user":"bot")}>
-                {m.text}{m.meta && <span className="meta">{m.meta}</span>}
+                {m.role==="user" ? m.text : <div className="msg-rich">{renderRichText(m.text)}</div>}
+                {m.meta && <span className="meta">{m.meta}</span>}
               </div>))}
         {busy && <div className="msg bot">…</div>}
       </div>
@@ -524,7 +581,6 @@ function CalendarTab({ db, cat, update, flash }){
   const rows = tasks.map(t=>({ ...t, s: taskStatus(t, today) }))
     .sort((a,b)=> (order[a.s.state]-order[b.s.state]) || (a.s.daysUntil-b.s.daysUntil));
 
-  const todayStr = () => new Date().toISOString().slice(0,10);
   const markDone = (id)=>{ update(next=>{ const t=next.maintenance[cat.id].find(x=>x.id===id); if(t) t.lastDone = todayStr(); }); flash("Marked done ✓"); };
   const setCad   = (id,v)=> update(next=>{ const t=next.maintenance[cat.id].find(x=>x.id===id); if(t) t.cadenceDays = Math.max(1, parseInt(v)||1); });
   const remove   = (id)=> update(next=>{ next.maintenance[cat.id] = next.maintenance[cat.id].filter(x=>x.id!==id); });
@@ -617,7 +673,7 @@ function PhotosTab({ db, cat, update, flash }){
       update(next=>{
         next.photos = next.photos || {};
         (next.photos[cat.id] = next.photos[cat.id] || []).push({
-          id: uid(), dataUrl, date: new Date().toISOString().slice(0,10),
+          id: uid(), dataUrl, date: todayStr(),
           area, caption: caption.trim(), ts: Date.now(),
         });
       });
