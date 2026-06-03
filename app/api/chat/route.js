@@ -28,7 +28,7 @@ export async function POST(req){
   try { payload = await req.json(); }
   catch { return json({ error: "Invalid JSON body" }, 400); }
 
-  const { question, cat = null, logs = [] } = payload || {};
+  const { question, cat = null, logs = [], model: reqModel = null } = payload || {};
   if(!question || !String(question).trim()){
     return json({ error: "Missing 'question'." }, 400);
   }
@@ -41,8 +41,12 @@ export async function POST(req){
   const sources = docs.slice(0,3).map(d => d.source);
 
   // 4: Claude (if a key is present)
+  // Allowlist so the client can pick a model without letting arbitrary strings through.
+  const ALLOWED_MODELS = new Set(["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
   const key = process.env.ANTHROPIC_API_KEY;
-  const model = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
+  const model = (typeof reqModel === "string" && ALLOWED_MODELS.has(reqModel))
+    ? reqModel
+    : (process.env.ANTHROPIC_MODEL || "claude-opus-4-8");
   let text, used, usedModel = null, fallbackReason = null;
 
   if(key){

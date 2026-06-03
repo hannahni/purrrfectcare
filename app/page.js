@@ -476,11 +476,19 @@ function renderRichText(text){
 }
 
 /* ---------- CHAT ---------- */
+const CHAT_MODELS = [
+  { v:"", label:"Default (Opus 4.8)" },
+  { v:"claude-opus-4-8", label:"Opus 4.8 — most capable" },
+  { v:"claude-sonnet-4-6", label:"Sonnet 4.6 — balanced" },
+  { v:"claude-haiku-4-5", label:"Haiku 4.5 — fast & cheap" },
+];
 function ChatTab({ db, cat, update }){
   const msgs = chatFor(db, cat.id);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const boxRef = useRef(null);
+  const modelChoice = (db.settings && db.settings.model) || "";
+  const setModel = (v)=> update(next=>{ next.settings = next.settings || {}; next.settings.model = v; });
 
   useEffect(()=>{ if(boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight; },[msgs.length, busy]);
 
@@ -496,7 +504,7 @@ function ChatTab({ db, cat, update }){
     try {
       const res = await fetch("/api/chat", {
         method:"POST", headers:{"content-type":"application/json"},
-        body: JSON.stringify({ question:q, cat, logs }),
+        body: JSON.stringify({ question:q, cat, logs, model: modelChoice || undefined }),
       });
       const data = await res.json();
       if(data.error) throw new Error(data.error);
@@ -517,7 +525,13 @@ function ChatTab({ db, cat, update }){
 
   return (
     <div className="panel chat">
-      <h2>Assistant <span className="sub">· knowledge-grounded · {cat.name}</span></h2>
+      <div className="row" style={{justifyContent:"space-between", alignItems:"center", gap:10}}>
+        <h2 style={{margin:0}}>Assistant <span className="sub">· knowledge-grounded · {cat.name}</span></h2>
+        <select value={modelChoice} onChange={e=>setModel(e.target.value)} title="Model used when an API key is set"
+          style={{width:"auto", minWidth:170, padding:"7px 10px"}}>
+          {CHAT_MODELS.map(m=><option key={m.v} value={m.v}>{m.label}</option>)}
+        </select>
+      </div>
       <div className="msgs" ref={boxRef}>
         {msgs.length===0
           ? <div className="empty">Ask me anything about {cat.name} — feeding, a worrying sign, grooming, behavior…<br/>
