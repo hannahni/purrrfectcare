@@ -13,9 +13,10 @@ import { DOCS, retrieve } from "../lib/knowledge.js";
 import { evaluate, weightTrend, ageInYears } from "../lib/reasoning.js";
 import { overallAppetite } from "../lib/signals.js";
 import { compute as computeNudges } from "../lib/nudges.js";
+import { seedTasks, taskStatus, todayNum, dueCount } from "../lib/maintenance.js";
 
 const TABS = [
-  ["today","📋 Today"],["dashboard","📊 Dashboard"],["chat","💬 Assistant"],
+  ["today","📋 Today"],["dashboard","📊 Dashboard"],["calendar","🗓️ Calendar"],["chat","💬 Assistant"],
   ["knowledge","📚 Knowledge"],["profile","🐱 Profile"],["settings","⚙️ Settings"],
 ];
 
@@ -66,6 +67,7 @@ export default function Page(){
         {needCat ? <Welcome onAdd={()=>setTab("profile")} />
           : tab==="today" ? <TodayTab db={db} cat={cat} update={update} flash={flash} />
           : tab==="dashboard" ? <DashboardTab db={db} cat={cat} />
+          : tab==="calendar" ? <CalendarTab db={db} cat={cat} update={update} flash={flash} />
           : tab==="chat" ? <ChatTab db={db} cat={cat} update={update} />
           : tab==="knowledge" ? <KnowledgeTab />
           : tab==="profile" ? <ProfileTab db={db} cat={cat} update={update} flash={flash} setTab={setTab} />
@@ -299,7 +301,12 @@ function DashboardTab({ db, cat }){
   const evald = evaluate({ cat, recentLogs: recent, tags, allLogs: logs });
   const wt = weightTrend(cat, logs);
   const ideal = idealCalories(cat);
-  const nudges = computeNudges(cat, logs);
+  const upkeep = db.maintenance && db.maintenance[cat.id];
+  const mDue = upkeep ? dueCount(upkeep, todayNum()) : 0;
+  const nudges = [
+    ...(mDue>0 ? [{key:"upkeep",icon:"🗓️",text:`${mDue} upkeep task${mDue===1?"":"s"} due or overdue — see the Calendar tab.`}] : []),
+    ...computeNudges(cat, logs),
+  ];
   const foodDocs = retrieve(["diet"], "feeding portion "+(cat.food||""), 2);
   const stage = lifeStage(cat);
   const longHair = /(persian|maine|ragdoll|long)/i.test(cat.breed||"");
@@ -453,6 +460,74 @@ function KnowledgeTab(){
         </div>
       ))}
       {shown.length===0 && <div className="empty">No entries match “{q}”.</div>}
+    </div>
+  );
+}
+
+/* ---------- CALENDAR (maintenance / upkeep) ---------- */
+function CalendarTab({ db, cat, update, flash }){
+  const tasks = db.maintenance && db.maintenance[cat.id];
+  const [newLabel, setNewLabel] = useState("");
+  const [newCad, setNewCad] = useState(7);
+
+  useEffect(()=>{
+    if(!tasks){
+      update(next=>{ next.maintenance = next.maintenance || {}; next.maintenance[cat.id] = seedTasks(); });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[cat.id, !!tasks]);
+
+  if(!tasks) return <div className="panel"><h2>🗓️ Maintenance calendar</h2><p className="muted">Setting up your upkeep list…</p></div>;
+
+  const today = todayNum();
+  const order = { overdue:0, due:1, new:2, upcoming:3 };
+  const rows = tasks.map(t=>({ ...t, s: taskStatus(t, today) }))
+    .sort((a,b)=> (order[a.s.state]-order[b.s.state]) || (a.s.daysUntil-b.s.daysUntil));
+
+  const todayStr = () => new Date().toISOString().slice(0,10);
+  const markDone = (id)=>{ update(next=>{ const t=next.maintenance[cat.id].find(x=>x.id===id); if(t) t.lastDone = todayStr(); }); flash("Marked done ✓"); };
+  const setCad   = (id,v)=> update(next=>{ const t=next.maintenance[cat.id].find(x=>x.id===id); if(t) t.cadenceDays = Math.max(1, parseInt(v)||1); });
+  const remove   = (id)=> update(next=>{ next.maintenance[cat.id] = next.maintenance[cat.id].filter(x=>x.id!==id); });
+  const addTask  = ()=>{
+    const label = newLabel.trim(); if(!label) return;
+    update(next=>{ next.maintenance[cat.id].push({ id: uid(), label, icon:"🔔", cadenceDays: Math.max(1, parseInt(newCad)||7), category:"Custom", lastDone:null }); });
+    setNewLabel(""); setNewCad(7); flash("Task added");
+  };
+
+  const Row = (t)=>(
+    <div key={t.id} className={"mrow "+t.s.state}>
+      <span className="ic">{t.icon}</span>
+      <div className="mrow-main">
+        <div className="mrow-title">{t.label} <span className="badge">{t.s.label}</span></div>
+        <div className="small muted">Every <input className="cad" type="number" min="1" value={t.cadenceDays} onChange={e=>setCad(t.id, e.target.value)}/> days{t.lastDone ? ` · last done ${t.lastDone}` : ""}</div>
+      </div>
+      <div className="mrow-actions">
+        <button className="btn sm" onClick={()=>markDone(t.id)}>✓ Done</button>
+        <button className="icon-btn" title="Remove task" onClick={()=>remove(t.id)}>✕</button>
+      </div>
+    </div>
+  );
+
+  const groups = [["overdue","⏰ Overdue"],["due","📅 Due today"],["new","🆕 Set up"],["upcoming","🔜 Upcoming"]];
+
+  return (
+    <div className="panel">
+      <h2>🗓️ Maintenance calendar <span className="sub">· {cat.name} · supplies, litter &amp; grooming on a schedule</span></h2>
+      <p className="muted small">Tap <b>✓ Done</b> when you finish a task — it resets the timer and tells you when it's due again. Adjust how often any task recurs, or add your own.</p>
+      {groups.map(([state,header])=>{
+        const items = rows.filter(t=>t.s.state===state);
+        if(!items.length) return null;
+        return <div key={state}><div className="mgroup-h">{header} ({items.length})</div>{items.map(Row)}</div>;
+      })}
+      <div className="mgroup-h">➕ Add a task</div>
+      <div className="row">
+        <input placeholder="e.g. Order more pee pads" value={newLabel} onChange={e=>setNewLabel(e.target.value)}
+          onKeyDown={e=>{ if(e.key==="Enter") addTask(); }} style={{flex:2, minWidth:180}}/>
+        <span className="small muted">every</span>
+        <input type="number" min="1" value={newCad} onChange={e=>setNewCad(e.target.value)} style={{width:80}}/>
+        <span className="small muted">days</span>
+        <button className="btn" onClick={addTask}>Add</button>
+      </div>
     </div>
   );
 }

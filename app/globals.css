@@ -172,6 +172,23 @@ textarea{resize:vertical;min-height:68px}
 .badge{font-size:11px;padding:3px 9px;border-radius:999px;background:var(--brand2-soft);border:1px solid #cfeae3;
   color:#1f7d6e;font-weight:700}
 
+/* maintenance calendar rows */
+.mrow{display:flex;gap:11px;align-items:center;border:1px solid var(--line);border-radius:13px;
+  padding:11px 14px;margin:8px 0;background:var(--panel2)}
+.mrow.overdue{background:var(--bad-soft);border-left:4px solid var(--bad)}
+.mrow.due{background:var(--warn-soft);border-left:4px solid var(--warn)}
+.mrow.upcoming{background:var(--panel);border-left:4px solid var(--line)}
+.mrow.new{background:var(--brand2-soft);border-left:4px solid var(--brand2)}
+.mrow .ic{font-size:18px;flex:0 0 auto}
+.mrow-main{flex:1;min-width:0}
+.mrow-title{font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mrow-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}
+input.cad{width:54px;display:inline-block;padding:3px 6px;margin:0 3px;text-align:center;border-radius:8px}
+.mgroup-h{font-size:13px;font-weight:700;color:var(--muted);margin:16px 0 4px;display:flex;align-items:center;gap:6px}
+.icon-btn{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:9px;
+  width:32px;height:32px;cursor:pointer;font-size:14px;line-height:1}
+.icon-btn:hover{background:var(--panel2);color:var(--bad)}
+
 /* toast */
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;
   padding:11px 18px;border-radius:12px;box-shadow:var(--shadow);z-index:50;font-weight:600;font-size:13.5px}
