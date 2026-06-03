@@ -10,6 +10,8 @@
    no key is set we return a friendly error the UI surfaces.
    Never diagnoses; recommends a vet whenever something could be serious.
    ============================================================================ */
+import { callAnthropic } from "../../../lib/anthropic.js";
+
 export const runtime = "nodejs";
 
 const SYSTEM = `You are PurrfectCare's visual care assistant for cats. You are NOT a veterinarian and must never diagnose. Examine the photo(s) and describe ONLY what is visibly observable and relevant to feline health or grooming — e.g. dandruff, matting, dull or greasy coat, hair loss, skin redness/scabs, eye or nose discharge, dental tartar, lumps, or stool color/consistency. Be measured; never invent or overstate findings. Choose a concern level: "none" (looks normal or minor), "monitor" (worth watching / home care), or "vet" (recommend a veterinarian — use this whenever something could be serious or you are unsure). Err toward caution. Respond ONLY as compact JSON: {"summary": one or two plain sentences, "observations": [short strings], "concern": "none|monitor|vet", "advice": short next steps}. When multiple dated images are provided, note any visible change over time in the summary.`;
@@ -45,17 +47,10 @@ export async function POST(req){
   }
 
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "content-type":"application/json", "x-api-key":key, "anthropic-version":"2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: 600, system: SYSTEM, messages: [{ role:"user", content }] }),
+    const { text } = await callAnthropic({
+      key, model, system: SYSTEM, maxTokens: 600,
+      messages: [{ role: "user", content }],
     });
-    if(!res.ok){
-      const detail = await res.text().catch(()=> "");
-      throw new Error(`Anthropic API ${res.status} ${detail.slice(0,200)}`);
-    }
-    const data = await res.json();
-    const text = (data.content||[]).map(c=>c.text).join("").trim();
     const parsed = extractJson(text);
     if(parsed) return json({ ...normalize(parsed), used:"claude" });
     return json({ summary: text || "No clear read.", observations:[], concern:"monitor", advice:"", used:"claude" });

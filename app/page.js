@@ -500,7 +500,11 @@ function ChatTab({ db, cat, update }){
       });
       const data = await res.json();
       if(data.error) throw new Error(data.error);
-      const engine = data.used==="claude" ? "Claude" : "built-in engine";
+      const engine = data.used==="claude"
+        ? `✨ Claude${data.model ? ` (${data.model})` : ""}`
+        : data.used==="rules-no-key"
+          ? "⚙️ built-in engine — set ANTHROPIC_API_KEY to enable Claude"
+          : "⚙️ built-in engine — Claude unavailable, retried";
       reply = { text:data.text, meta:`${engine} · sources: ${(data.sources||[]).join("; ")||"—"}` };
     } catch(e){
       reply = { text:`Sorry — I couldn't reach the assistant service. (${e.message})`, meta:"error" };

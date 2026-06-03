@@ -17,6 +17,7 @@
 import { matchTags } from "../../../lib/nlp.js";
 import { retrieve } from "../../../lib/knowledge.js";
 import { evaluate } from "../../../lib/reasoning.js";
+import { callAnthropic } from "../../../lib/anthropic.js";
 
 export const runtime = "nodejs";
 
@@ -42,16 +43,19 @@ export async function POST(req){
   // 4: Claude (if a key is present)
   const key = process.env.ANTHROPIC_API_KEY;
   const model = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
-  let text, used;
+  let text, used, usedModel = null, fallbackReason = null;
 
   if(key){
     try {
-      text = await callClaude({ key, model, question, cat, tags, docs });
+      const out = await callClaude({ key, model, question, cat, tags, docs });
+      text = out.text;
+      usedModel = out.model;
       used = "claude";
     } catch (e){
       text = composeFallback({ evald, docs });
       used = "rules";
-      text += `\n\n_(Claude call failed — answered with the built-in engine. ${String(e.message||e)})_`;
+      fallbackReason = String(e.message || e);
+      text += `\n\n_(Claude call failed — answered with the built-in engine. ${fallbackReason})_`;
     }
   } else {
     text = composeFallback({ evald, docs });
@@ -66,7 +70,9 @@ export async function POST(req){
 
   return json({
     text,
-    used,
+    used,                       // "claude" | "rules" | "rules-no-key"
+    model: usedModel,           // the model that actually answered (null on fallback)
+    fallbackReason,             // why we fell back (only when used === "rules")
     sources,
     tags: tags.map(t => ({ tag: t.tag, label: t.label, redFlag: t.redFlag })),
     escalate: evald.escalate,
@@ -84,28 +90,10 @@ async function callClaude({ key, model, question, cat, tags, docs }){
     `Sources:\n${context || "(no specific source matched)"}\n\n`+
     `Owner asks: ${question}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 700,
-      system: SYSTEM,
-      messages: [{ role: "user", content: userMsg }],
-    }),
+  return callAnthropic({
+    key, model, system: SYSTEM, maxTokens: 700,
+    messages: [{ role: "user", content: userMsg }],
   });
-  if(!res.ok){
-    const detail = await res.text().catch(()=> "");
-    throw new Error(`Anthropic API ${res.status} ${detail.slice(0,200)}`);
-  }
-  const data = await res.json();
-  const text = (data.content||[]).map(c=>c.text).join("").trim();
-  if(!text) throw new Error("Empty response");
-  return text;
 }
 
 function composeFallback({ evald, docs }){
